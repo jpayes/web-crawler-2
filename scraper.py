@@ -1,5 +1,6 @@
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin, urldefrag
+from lxml import html
 
 def scraper(url, resp):
     links = extract_next_links(url, resp)
@@ -15,7 +16,47 @@ def extract_next_links(url, resp):
     #         resp.raw_response.url: the url, again
     #         resp.raw_response.content: the content of the page!
     # Return a list with the hyperlinks (as strings) scrapped from resp.raw_response.content
-    return list()
+    
+    new_urls = []
+
+    if resp.status != 200:
+        return new_urls
+
+    if resp.raw_response is None or resp.raw_response.content is None:
+        return new_urls
+    
+    try:
+        # Parse HTML content with lxml
+        tree = html.fromstring(resp.raw_response.content)
+        
+        raw_links = tree.xpath('//a/@href')
+
+        base_url = resp.url if resp.url else url
+
+        for link in raw_links:
+            if link:
+                # Convert relative URLs to absolute URLs
+                absolute_url = urljoin(base_url, link)
+                
+                # Remove fragment (everything after #) - proper way
+                absolute_url, _ = urldefrag(absolute_url)
+                
+                if absolute_url:
+                    new_urls.append(absolute_url)
+    
+    except Exception as e:
+        print(f"Error parsing HTML for {url}: {e}")
+        return []
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_links = []
+    for url in new_urls:
+        if url not in seen:
+            seen.add(url)
+            unique_links.append(url)
+
+    return unique_links
 
 def is_valid(url):
     # Decide whether to crawl this url or not. 
