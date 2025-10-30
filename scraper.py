@@ -1,5 +1,5 @@
 import re
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, urldefrag
 from lxml import html
 
 def scraper(url, resp):
@@ -38,8 +38,8 @@ def extract_next_links(url, resp):
                 # Convert relative URLs to absolute URLs
                 absolute_url = urljoin(base_url, link)
                 
-                if '#' in absolute_url:
-                    absolute_url = absolute_url.split('#')[0]
+                # Remove fragment (everything after #) - proper way
+                absolute_url, _ = urldefrag(absolute_url)
                 
                 if absolute_url:
                     new_urls.append(absolute_url)
@@ -47,8 +47,16 @@ def extract_next_links(url, resp):
     except Exception as e:
         print(f"Error parsing HTML for {url}: {e}")
         return []
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_links = []
+    for url in new_urls:
+        if url not in seen:
+            seen.add(url)
+            unique_links.append(url)
 
-    return new_urls
+    return unique_links
 
 def is_valid(url):
     # Decide whether to crawl this url or not. 

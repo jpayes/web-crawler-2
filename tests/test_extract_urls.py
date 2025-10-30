@@ -68,8 +68,7 @@ class TestExtractNextLinks(unittest.TestCase):
         links = extract_next_links("http://ics.uci.edu/", mock_resp)
         
         expected_links = [
-            "http://ics.uci.edu/page",
-            "http://ics.uci.edu/page",  # Duplicate from different fragments
+            "http://ics.uci.edu/page",  # Only one instance (duplicates removed)
             "http://ics.uci.edu/other.html",
             "http://ics.uci.edu/normal"
         ]
