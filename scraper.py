@@ -45,7 +45,6 @@ def extract_next_links(url, resp):
                     new_urls.append(absolute_url)
     
     except Exception as e:
-        # Handle parsing errors gracefully
         print(f"Error parsing HTML for {url}: {e}")
         return []
 
