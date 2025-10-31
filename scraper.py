@@ -1,10 +1,50 @@
 import re
 from urllib.parse import urlparse, urljoin, urldefrag
 from lxml import html
+from bs4 import BeautifulSoup
+
+analytics = {
+    "unique_pages": set(),
+    "longest_page_url": None,
+    "longest_page_word_count": 0,
+    "word_frequencies": {},
+    "subdomain_counts": {}
+}
 
 def scraper(url, resp):
     links = extract_next_links(url, resp)
-    return [link for link in links if is_valid(link)]
+    # will be a list containing all the valid links after extraction
+    valid_links = [link for link in links if is_valid(link)]
+    
+    if (resp.status == 200) and (resp.raw_respone) and (resp.raw_response.content):
+        # this will separate the url from the fragment(fragment not needed)
+        clean_url, fragment = urldefrag(resp.url if resp.url else url)
+        if clean_url not in analytics["unique_pages"]:
+            analytics["unique_pages"].add(clean_url)
+            try:
+                # using beautiful soup library (prof mentioned in lecture) to parse HTML
+                soup = BeautifulSoup(resp.raw_response.content, "lxml")
+                # removes unneccesary tags before text analysis
+                for useless in soup(["script", "style", "noscript"]): 
+                    useless.extract()
+                
+                # this will get the text 
+                text = soup.get_text(separator = " ", strip = True)
+                # THIS IS THE "TOKENIZER", MAY NEED TO CHANGE 
+                # BUT FOR NOW ONLY ALPHABET CHARS ALLOWED
+                words = re.findall(r"[A-Za-z]+", text.lower())
+                
+                # this loop updates the table for word frequencies
+                for word in words:
+                    analytics["word_frequencies"][word] = analytics["word_frequencies"].get(word, 0) + 1
+                #TODO 
+                # update longest page infor like url and word_count for said page
+                
+                #TODO
+                # need to add code that will update the number of
+                # subdomains I found using the crawler
+            except Exception as e:
+                print(f"Error for {clean_url}: {e}")
 
 def extract_next_links(url, resp):
     # Implementation required.
@@ -27,8 +67,9 @@ def extract_next_links(url, resp):
     
     try:
         # Parse HTML content with lxml
+        # THESE TWO LINES (72-73) I AM GOING TO CHANGE, SO
+        # I WILL BE USING BEAUTIFULSOUP AS MENTIONED
         tree = html.fromstring(resp.raw_response.content)
-        
         raw_links = tree.xpath('//a/@href')
 
         base_url = resp.url if resp.url else url
@@ -68,7 +109,13 @@ def is_valid(url):
             return False
         
         # Check if URL is in allowed UCI domains - CRITICAL REQUIREMENT
-        allowed_domains = ["ics.uci.edu", "cs.uci.edu", "informatics.uci.edu", "stat.uci.edu"]
+        allowed_domains = [
+            "ics.uci.edu",
+            "cs.uci.edu",
+            "informatics.uci.edu",
+            "stat.uci.edu"
+        ]
+        
         netloc = parsed.netloc.lower()
         
         # Check if netloc exactly matches or is a subdomain of allowed domains
