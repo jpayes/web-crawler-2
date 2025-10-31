@@ -3,11 +3,41 @@ from urllib.parse import urlparse, urljoin, urldefrag
 from lxml import html
 from bs4 import BeautifulSoup
 
+# GLOBAL VAR for minimum words for a website to be useful
+MIN_WORDS = 100
+# common stop words provided in write-up
+stopwords = {
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
+    "any", "are", "aren't", "as", "at", "be", "because", "been", "before", "being",
+    "below", "between", "both", "but", "by", "can't", "cannot", "could", "couldn't",
+    "did", "didn't", "do", "does", "doesn't", "doing", "don't", "down", "during",
+    "each", "few", "for", "from", "further", "had", "hadn't", "has", "hasn't",
+    "have", "haven't", "having", "he", "he'd", "he'll", "he's", "her", "here",
+    "here's", "hers", "herself", "him", "himself", "his", "how", "how's", "i",
+    "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't", "it", "it's",
+    "its", "itself", "let's", "me", "more", "most", "mustn't", "my", "myself", "no",
+    "nor", "not", "of", "off", "on", "once", "only", "or", "other", "ought", "our",
+    "ours", "ourselves", "out", "over", "own", "same", "shan't", "she", "she'd",
+    "she'll", "she's", "should", "shouldn't", "so", "some", "such", "than", "that",
+    "that's", "the", "their", "theirs", "them", "themselves", "then", "there",
+    "there's", "these", "they", "they'd", "they'll", "they're", "they've", "this",
+    "those", "through", "to", "too", "under", "until", "up", "very", "was",
+    "wasn't", "we", "we'd", "we'll", "we're", "we've", "were", "weren't", "what",
+    "what's", "when", "when's", "where", "where's", "which", "while", "who",
+    "who's", "whom", "why", "why's", "with", "won't", "would", "wouldn't", "you",
+    "you'd", "you'll", "you're", "you've", "your", "yours", "yourself", "yourselves",
+}
+
 analytics = {
+    # set of the unique pages found
     "unique_pages": set(),
+    # the url to the page with most words
     "longest_page_url": None,
+    # the count of words in the longest page
     "longest_page_word_count": 0,
+    # dictionary for the words parsed and their count
     "word_frequencies": {},
+    # dictionary for the subdomains and their count
     "subdomain_counts": {}
 }
 
@@ -15,36 +45,50 @@ def scraper(url, resp):
     links = extract_next_links(url, resp)
     # will be a list containing all the valid links after extraction
     valid_links = [link for link in links if is_valid(link)]
-    
-    if (resp.status == 200) and (resp.raw_respone) and (resp.raw_response.content):
+    # checks if the response is valid and if there is any valid content to parse
+    if (resp.status == 200) and (resp.raw_response) and (resp.raw_response.content):
         # this will separate the url from the fragment(fragment not needed)
+        # this is just a double check possibly redundent if URL is still clean from extraction
         clean_url, fragment = urldefrag(resp.url if resp.url else url)
+        # checks if url is in set of unique pages, if not then add it
         if clean_url not in analytics["unique_pages"]:
             analytics["unique_pages"].add(clean_url)
             try:
                 # using beautiful soup library (prof mentioned in lecture) to parse HTML
                 soup = BeautifulSoup(resp.raw_response.content, "lxml")
                 # removes unneccesary tags before text analysis
+                # so only useful text will be taken for the parsing
                 for useless in soup(["script", "style", "noscript"]): 
                     useless.extract()
                 
-                # this will get the text 
+                # this will get the text
                 text = soup.get_text(separator = " ", strip = True)
                 # THIS IS THE "TOKENIZER", MAY NEED TO CHANGE 
                 # BUT FOR NOW ONLY ALPHABET CHARS ALLOWED
                 words = re.findall(r"[A-Za-z]+", text.lower())
                 
+                word_count = len(words)
+                # will skip pages with minimal content
+                if word_count < MIN_WORDS: # REVIEW BC IDK IF ITS TOO LOW OR HIGH 
+                    return valid_links
                 # this loop updates the table for word frequencies
                 for word in words:
-                    analytics["word_frequencies"][word] = analytics["word_frequencies"].get(word, 0) + 1
-                #TODO 
-                # update longest page infor like url and word_count for said page
+                    # excludes any stopwords from the set
+                    if word not in stopwords:
+                        analytics["word_frequencies"][word] = (analytics["word_frequencies"].get(word, 0) + 1)
+                
+                # Will update the longest page analytics
+                if len(words) > analytics["longest_page_word_count"]:
+                    analytics["longest_page_url"]= clean_url
+                    analytics["longest_page_word_count"] = word_count
                 
                 #TODO
-                # need to add code that will update the number of
-                # subdomains I found using the crawler
+                # IMPLEMENT THE SUBDOMAIN TRACKER FOR ANALYTICS
+                # SUBDOMAINS ALLOWED ARE "UCI.EDU" I THINK?
+                
             except Exception as e:
                 print(f"Error for {clean_url}: {e}")
+    return valid_links
 
 def extract_next_links(url, resp):
     # Implementation required.
@@ -66,12 +110,10 @@ def extract_next_links(url, resp):
         return new_urls
     
     try:
-        # Parse HTML content with lxml
-        # THESE TWO LINES (72-73) I AM GOING TO CHANGE, SO
-        # I WILL BE USING BEAUTIFULSOUP AS MENTIONED
-        tree = html.fromstring(resp.raw_response.content)
-        raw_links = tree.xpath('//a/@href')
-
+        # Parse HTML content with lxml using BeautifulSoup
+        soup = BeautifulSoup(resp.raw_response.content, "lxml")
+        raw_links = [a["href"] for a in soup.find_all("a", href=True)]
+    
         base_url = resp.url if resp.url else url
 
         for link in raw_links:
