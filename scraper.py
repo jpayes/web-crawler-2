@@ -66,6 +66,22 @@ def is_valid(url):
         parsed = urlparse(url)
         if parsed.scheme not in set(["http", "https"]):
             return False
+        
+        # Check if URL is in allowed UCI domains - CRITICAL REQUIREMENT
+        allowed_domains = ["ics.uci.edu", "cs.uci.edu", "informatics.uci.edu", "stat.uci.edu"]
+        netloc = parsed.netloc.lower()
+        
+        # Check if netloc exactly matches or is a subdomain of allowed domains
+        is_valid_domain = False
+        for domain in allowed_domains:
+            if netloc == domain or netloc.endswith('.' + domain):
+                is_valid_domain = True
+                break
+        
+        if not is_valid_domain:
+            return False
+        
+        # Check for unwanted file extensions
         return not re.match(
             r".*\.(css|js|bmp|gif|jpe?g|ico"
             + r"|png|tiff?|mid|mp2|mp3|mp4"
@@ -78,4 +94,4 @@ def is_valid(url):
 
     except TypeError:
         print ("TypeError for ", parsed)
-        raise
+        return False
