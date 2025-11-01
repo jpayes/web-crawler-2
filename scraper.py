@@ -49,6 +49,64 @@ analytics = {
     "subdomain_counts": {}
 }
 
+
+
+def finalize_report():
+        """
+        Writes the final statistics from the complete web crawl.
+        1. Number of Unique URLs
+        2. Longest page in terms of words
+        3. 50 Most common words from entire set of crawled sites
+        4. Subdomains of "*.uci.edu" with their corresponding count
+        """
+        try:
+            with open("report.txt", "w") as f:
+                # number of unique pages
+                f.write("1. Number of unique pages found\n")
+                f.write(f"{len(analytics['unique_pages'])}\n\n")
+
+                # longest page (by number of words)
+                f.write("2. Longest page (by number of words)\n")
+                if analytics["longest_page_url"]:
+                    f.write(f"URL: {analytics['longest_page_url']}\n")
+                    f.write(f"Word count: {analytics['longest_page_word_count']}\n\n")
+                else:
+                    f.write("No pages processed.\n\n")
+
+                # 50 most common words
+                f.write("3. 50 most common words\n")
+
+                # sorts the dictionary and then uses the reverse=True to retrieve the last 50 (highest count) words
+                sorted_words = sorted(
+                    analytics["word_frequencies"].items(),
+                    key=lambda x: x[1],
+                    reverse=True
+                )[:50]
+
+                # writes the 50 top words to the file
+                for word, freq in sorted_words:
+                    f.write(f"{word}: {freq}\n")
+                f.write("\n")
+
+                # subdomains under *.uci.edu and their unique page counts
+                f.write("4. Subdomains found under *.uci.edu\n")
+
+                if analytics["subdomain_counts"]:
+                    for subdomain in sorted(analytics["subdomain_counts"].keys()):
+                        count = analytics["subdomain_counts"][subdomain]
+                        f.write(f"{subdomain}, {count}\n")
+                else:
+                    # shouldn't run this tbh
+                    f.write("No subdomains found.\n")
+
+            print(
+                f"[Analytics] Results written to report.txt\n"
+            )
+
+        except Exception as e:
+            print(f"[Analytics ERROR] Failed to write output file: {e}")
+
+
 def extract_text_from_tree(tree):
     """Helper function to extract clean text from lxml tree (replaces BeautifulSoup logic)"""
     # Remove script, style, and noscript elements (same as groupmate's logic)
@@ -275,9 +333,9 @@ def extract_next_links(url, resp):
 def check_for_traps(url, parsed):
     """
     Returns False if the URL is considered a trap (calendar loops, 
-    dynamic date/event queries, etc.), True otherwise.
+    dynamic date/event queries, ...), True otherwise.
     """
-    # 1. Block known seminar series pattern (calendar trap)
+    # block the seminar series
     if re.match(
         r"^https?:\/\/www\.stat\.uci\.edu\/ICS\/statistics\/research\/seminarseries\/\d{4}-\d{4}\/index$",
         url
@@ -294,6 +352,9 @@ def check_for_traps(url, parsed):
 
     # blocks month/year URLs that often repeat
     if re.search(r"/\d{4}-\d{2}(/|$)", parsed.path):
+        return False
+    # seperate cases of events with different date formatting (didn't get covered by other case)
+    if re.search(r"/events/(today|month|\d{4}-\d{2}(-\d{2})?)", parsed.path, re.IGNORECASE):
         return False
     
     # blocks any login pages from being added to frontier
@@ -316,15 +377,24 @@ def check_for_traps(url, parsed):
     if any(part.startswith(('version=', 'do=', 'rev=')) for part in query_parts):
         return False
 
+    # addresses eppstein/pix files, not useful at all for the amount of URLs generated
+    if re.match(r"^https?:\/\/(?:www\.)?ics\.uci\.edu\/~eppstein\/pix(?:\/.*)?$", url):
+        return False
+    
+    # blocks the wiki traps that take you down a spiral of pages that you can't even access
+    if re.search(r"/wiki/.*/timeline", url, re.IGNORECASE) and "from=" in parsed.query:
+        return False
     # Passed all traps
     return True
     
     
         
 def is_valid(url):
-    # Decide whether to crawl this url or not. 
-    # If you decide to crawl it, return True; otherwise return False.
-    # There are already some conditions that return False.
+    """
+    Decide whether to crawl this url or not. 
+    If you decide to crawl it, return True; otherwise return False.
+    There are already some conditions that return False.
+    """
     try:
         parsed = urlparse(url)
         if parsed.scheme not in set(["http", "https"]):
@@ -343,6 +413,7 @@ def is_valid(url):
         if not is_valid_domain:
             return False
         
+        # checks if the URL is one of the traps (includes print testing)
         if not check_for_traps(url, parsed):
             print(f"[TRAP BLOCKED] {url}")
             return False
@@ -354,8 +425,8 @@ def is_valid(url):
             + r"|wav|avi|mov|mpeg|ram|m4v|mkv|ogg|ogv|pdf"
             + r"|ps|eps|tex|ppt|pptx|doc|docx|xls|xlsx|names"
             + r"|data|dat|exe|bz2|tar|msi|bin|7z|psd|dmg|iso"
-            + r"|epub|dll|cnf|tgz|sha1|apk|war|txt|pps|ppsx"
-            + r"|thmx|mso|arff|rtf|jar|csv"
+            + r"|epub|dll|cnf|tgz|sha1|apk|war|txt|pps|ppsx|scm"
+            + r"|thmx|mso|arff|rtf|jar|csv|img|c|cpp|h|py|java"
             + r"|rm|smil|wmv|swf|wma|zip|rar|gz)$", parsed.path.lower())
         
         return True
