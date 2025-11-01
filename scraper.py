@@ -1,10 +1,18 @@
 import re
 from urllib.parse import urlparse, urljoin, urldefrag
 from lxml import html
-from bs4 import BeautifulSoup
 
 # GLOBAL VAR for minimum words for a website to be useful
-MIN_WORDS = 100
+MIN_WORDS = 50
+
+# Allowed UCI domains for crawling - CRITICAL REQUIREMENT
+ALLOWED_DOMAINS = [
+    "ics.uci.edu",
+    "cs.uci.edu",
+    "informatics.uci.edu",
+    "stat.uci.edu"
+]
+
 # common stop words provided in write-up
 stopwords = {
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and",
@@ -41,6 +49,146 @@ analytics = {
     "subdomain_counts": {}
 }
 
+def extract_text_from_tree(tree):
+    """Helper function to extract clean text from lxml tree (replaces BeautifulSoup logic)"""
+    # Remove script, style, and noscript elements (same as groupmate's logic)
+    for element in tree.xpath('//script | //style | //noscript'):
+        element.getparent().remove(element)
+    
+    # Get text content (equivalent to soup.get_text(separator=" ", strip=True))
+    text = tree.text_content()
+    # Clean up whitespace to match BeautifulSoup's separator=" ", strip=True behavior
+    text = ' '.join(text.split())
+    return text
+
+def is_alnum(char: str) -> bool:
+    """
+    Helper function to check if a character is alphanumeric.
+    Enhanced to handle web content better.
+    """
+    if len(char) != 1:
+        return False
+    
+    # Check if it's a digit (0-9)
+    if '0' <= char <= '9':
+        return True
+    
+    # Check if it's a lowercase letter (a-z)
+    if 'a' <= char <= 'z':
+        return True
+    
+    # Check if it's an uppercase letter (A-Z)
+    if 'A' <= char <= 'Z':
+        return True
+    
+    return False
+
+def tokenize_text(text):
+    """
+    Enhanced tokenization for web content (replaces groupmate's regex)
+    Better handling of edge cases than simple regex approach.
+    """
+    if not text:
+        return []
+    
+    tokens = []
+    current_token = ""
+    
+    for char in text:
+        if is_alnum(char):
+            current_token += char.lower()
+        else:
+            if current_token:
+                tokens.append(current_token)
+                current_token = ""
+    
+    # Don't forget the last token
+    if current_token:
+        tokens.append(current_token)
+    
+    return tokens
+
+def update_word_frequencies(words):
+    """Helper function to update word frequency analytics"""
+    for word in words:
+        # excludes any stopwords from the set
+        if word not in stopwords:
+            analytics["word_frequencies"][word] = (analytics["word_frequencies"].get(word, 0) + 1)
+
+def update_longest_page(clean_url, word_count):
+    """Helper function to update longest page analytics"""
+    # Will update the longest page analytics
+    if word_count > analytics["longest_page_word_count"]:
+        analytics["longest_page_url"] = clean_url
+        analytics["longest_page_word_count"] = word_count
+
+def update_subdomain_analytics(clean_url):
+    """Helper function to implement subdomain tracking for report question 4"""
+    try:
+        parsed = urlparse(clean_url)
+        netloc = parsed.netloc.lower()
+        
+        # Check if netloc exactly matches or is a subdomain of allowed domains
+        is_valid_domain = False
+        for domain in ALLOWED_DOMAINS:
+            if netloc == domain or netloc.endswith('.' + domain):
+                is_valid_domain = True
+                break
+        
+        if is_valid_domain:
+            # Count unique pages per subdomain
+            if netloc not in analytics["subdomain_counts"]:
+                analytics["subdomain_counts"][netloc] = 0
+            analytics["subdomain_counts"][netloc] += 1
+    except Exception as e:
+        # Silently handle any URL parsing errors
+        pass
+
+def save_analytics_to_file():
+    """Helper function to save analytics data for report generation"""
+    import json
+    
+    # Convert set to list for JSON serialization
+    analytics_copy = analytics.copy()
+    analytics_copy["unique_pages"] = list(analytics["unique_pages"])
+    
+    with open("analytics_data.json", "w") as f:
+        json.dump(analytics_copy, f, indent=2)
+    
+    print(f"Analytics saved: {len(analytics['unique_pages'])} unique pages crawled")
+
+def process_page_analytics(clean_url, tree):
+    """Helper function to process all analytics for a page"""
+    try:
+        # Extract text using lxml instead of BeautifulSoup
+        text = extract_text_from_tree(tree)
+        
+        # Tokenize using enhanced tokenizer instead of simple regex
+        words = tokenize_text(text)
+        
+        word_count = len(words)
+        # will skip pages with minimal content (groupmate's logic)
+        if word_count < MIN_WORDS: # REVIEW BC IDK IF ITS TOO LOW OR HIGH 
+            return False  # Indicates page should be skipped
+        
+        # Add URL to unique pages set (this was missing!)
+        analytics["unique_pages"].add(clean_url)
+        
+        # Update analytics using helper functions
+        update_word_frequencies(words)
+        update_longest_page(clean_url, word_count)
+        update_subdomain_analytics(clean_url)
+        
+        # Save analytics periodically (every 100 pages)
+        if len(analytics["unique_pages"]) % 100 == 0:
+            save_analytics_to_file()
+        
+        return True  # Indicates page was processed successfully
+        
+    except Exception as e:
+        print(f"Error processing analytics for {clean_url}: {e}")
+        return False
+
 def scraper(url, resp):
     links = extract_next_links(url, resp)
     # will be a list containing all the valid links after extraction
@@ -54,41 +202,33 @@ def scraper(url, resp):
         if clean_url not in analytics["unique_pages"]:
             analytics["unique_pages"].add(clean_url)
             try:
-                # using beautiful soup library (prof mentioned in lecture) to parse HTML
-                soup = BeautifulSoup(resp.raw_response.content, "lxml")
-                # removes unneccesary tags before text analysis
-                # so only useful text will be taken for the parsing
-                for useless in soup(["script", "style", "noscript"]): 
-                    useless.extract()
-                
-                # this will get the text
-                text = soup.get_text(separator = " ", strip = True)
-                # THIS IS THE "TOKENIZER", MAY NEED TO CHANGE 
-                # BUT FOR NOW ONLY ALPHABET CHARS ALLOWED
-                words = re.findall(r"[A-Za-z]+", text.lower())
-                
-                word_count = len(words)
-                # will skip pages with minimal content
-                if word_count < MIN_WORDS: # REVIEW BC IDK IF ITS TOO LOW OR HIGH 
-                    return valid_links
-                # this loop updates the table for word frequencies
-                for word in words:
-                    # excludes any stopwords from the set
-                    if word not in stopwords:
-                        analytics["word_frequencies"][word] = (analytics["word_frequencies"].get(word, 0) + 1)
-                
-                # Will update the longest page analytics
-                if len(words) > analytics["longest_page_word_count"]:
-                    analytics["longest_page_url"]= clean_url
-                    analytics["longest_page_word_count"] = word_count
-                
-                #TODO
-                # IMPLEMENT THE SUBDOMAIN TRACKER FOR ANALYTICS
-                # SUBDOMAINS ALLOWED ARE "UCI.EDU" I THINK?
+                tree = html.fromstring(resp.raw_response.content)
+                success = process_page_analytics(clean_url, tree)
+                if not success:
+                    return valid_links  # Skip if page has minimal content
                 
             except Exception as e:
                 print(f"Error for {clean_url}: {e}")
     return valid_links
+
+def extract_links_from_tree(tree, base_url):
+    """Helper function to extract links using lxml (replaces BeautifulSoup logic)"""
+    # Extract all href attributes from anchor tags (equivalent to soup.find_all("a", href=True))
+    raw_links = tree.xpath('//a/@href')
+    
+    new_urls = []
+    for link in raw_links:
+        # Process all href values, including empty ones (which resolve to base URL)
+        # Convert relative URLs to absolute URLs
+        absolute_url = urljoin(base_url, link)
+        
+        # Remove fragment (everything after #) - proper way
+        absolute_url, _ = urldefrag(absolute_url)
+        
+        if absolute_url:
+            new_urls.append(absolute_url)
+    
+    return new_urls
 
 def extract_next_links(url, resp):
     # Implementation required.
@@ -110,28 +250,18 @@ def extract_next_links(url, resp):
         return new_urls
     
     try:
-        # Parse HTML content with lxml using BeautifulSoup
-        soup = BeautifulSoup(resp.raw_response.content, "lxml")
-        raw_links = [a["href"] for a in soup.find_all("a", href=True)]
-    
+        # Parse HTML content with lxml instead of BeautifulSoup
+        tree = html.fromstring(resp.raw_response.content)
         base_url = resp.url if resp.url else url
-
-        for link in raw_links:
-            if link:
-                # Convert relative URLs to absolute URLs
-                absolute_url = urljoin(base_url, link)
-                
-                # Remove fragment (everything after #) - proper way
-                absolute_url, _ = urldefrag(absolute_url)
-                
-                if absolute_url:
-                    new_urls.append(absolute_url)
+        
+        # Extract links using helper function
+        new_urls = extract_links_from_tree(tree, base_url)
     
     except Exception as e:
         print(f"Error parsing HTML for {url}: {e}")
         return []
     
-    # Remove duplicates while preserving order
+    # Remove duplicates while preserving order (keeping groupmate's exact logic)
     seen = set()
     unique_links = []
     for url in new_urls:
@@ -151,18 +281,11 @@ def is_valid(url):
             return False
         
         # Check if URL is in allowed UCI domains - CRITICAL REQUIREMENT
-        allowed_domains = [
-            "ics.uci.edu",
-            "cs.uci.edu",
-            "informatics.uci.edu",
-            "stat.uci.edu"
-        ]
-        
         netloc = parsed.netloc.lower()
         
         # Check if netloc exactly matches or is a subdomain of allowed domains
         is_valid_domain = False
-        for domain in allowed_domains:
+        for domain in ALLOWED_DOMAINS:
             if netloc == domain or netloc.endswith('.' + domain):
                 is_valid_domain = True
                 break
