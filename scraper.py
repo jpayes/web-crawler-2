@@ -3,7 +3,7 @@ from urllib.parse import urlparse, urljoin, urldefrag
 from lxml import html
 
 # GLOBAL VAR for minimum words for a website to be useful
-MIN_WORDS = 50
+MIN_WORDS = 100
 
 # Allowed UCI domains for crawling - CRITICAL REQUIREMENT
 ALLOWED_DOMAINS = [
@@ -200,12 +200,13 @@ def scraper(url, resp):
         clean_url, fragment = urldefrag(resp.url if resp.url else url)
         # checks if url is in set of unique pages, if not then add it
         if clean_url not in analytics["unique_pages"]:
-            analytics["unique_pages"].add(clean_url)
             try:
                 tree = html.fromstring(resp.raw_response.content)
                 success = process_page_analytics(clean_url, tree)
                 if not success:
+                    print("[SCRAPER] skipped this page")
                     return valid_links  # Skip if page has minimal content
+                analytics["unique_pages"].add(clean_url)
                 
             except Exception as e:
                 print(f"Error for {clean_url}: {e}")
@@ -271,6 +272,55 @@ def extract_next_links(url, resp):
 
     return unique_links
 
+def check_for_traps(url, parsed):
+    """
+    Returns False if the URL is considered a trap (calendar loops, 
+    dynamic date/event queries, etc.), True otherwise.
+    """
+    # 1. Block known seminar series pattern (calendar trap)
+    if re.match(
+        r"^https?:\/\/www\.stat\.uci\.edu\/ICS\/statistics\/research\/seminarseries\/\d{4}-\d{4}\/index$",
+        url
+    ):
+        return False
+
+    # blocks these tribe calendar pages
+    if "tribe" in url or "tribe-bar-date" in url:
+        return False
+
+    # blocks the URLs that have ical (calendar related)
+    if re.search(r"[?&](outlook-)?ical(=\d+|=1)?", parsed.query, re.IGNORECASE):
+        return False
+
+    # blocks month/year URLs that often repeat
+    if re.search(r"/\d{4}-\d{2}(/|$)", parsed.path):
+        return False
+    
+    # blocks any login pages from being added to frontier
+    if re.search(r"login", url, re.IGNORECASE):
+        return False
+    
+    # page that got infinitely stuck during debug
+    if "doku.php" in url.lower():
+        return False
+    
+    # necessary for any pagination loops (page=70, page=71, page=72, ...)
+    pagination_patterns = ('page=', 'start=', 'offset=')
+    for p in pagination_patterns:
+        m = re.search(rf'{p}(\d+)', parsed.query)
+        if m and int(m.group(1)) > 5:
+            return False
+        
+    # works on removing version traps like Wiki
+    query_parts = parsed.query.split('&') if parsed.query else []
+    if any(part.startswith(('version=', 'do=', 'rev=')) for part in query_parts):
+        return False
+
+    # Passed all traps
+    return True
+    
+    
+        
 def is_valid(url):
     # Decide whether to crawl this url or not. 
     # If you decide to crawl it, return True; otherwise return False.
@@ -293,6 +343,10 @@ def is_valid(url):
         if not is_valid_domain:
             return False
         
+        if not check_for_traps(url, parsed):
+            print(f"[TRAP BLOCKED] {url}")
+            return False
+        
         # Check for unwanted file extensions
         return not re.match(
             r".*\.(css|js|bmp|gif|jpe?g|ico"
@@ -300,9 +354,11 @@ def is_valid(url):
             + r"|wav|avi|mov|mpeg|ram|m4v|mkv|ogg|ogv|pdf"
             + r"|ps|eps|tex|ppt|pptx|doc|docx|xls|xlsx|names"
             + r"|data|dat|exe|bz2|tar|msi|bin|7z|psd|dmg|iso"
-            + r"|epub|dll|cnf|tgz|sha1"
+            + r"|epub|dll|cnf|tgz|sha1|apk|war|txt|pps|ppsx"
             + r"|thmx|mso|arff|rtf|jar|csv"
             + r"|rm|smil|wmv|swf|wma|zip|rar|gz)$", parsed.path.lower())
+        
+        return True
 
     except TypeError:
         print ("TypeError for ", parsed)
