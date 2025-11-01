@@ -277,7 +277,7 @@ def check_for_traps(url, parsed):
     Returns False if the URL is considered a trap (calendar loops, 
     dynamic date/event queries, etc.), True otherwise.
     """
-    # 1. Block known seminar series pattern (calendar trap)
+    # block the seminar series
     if re.match(
         r"^https?:\/\/www\.stat\.uci\.edu\/ICS\/statistics\/research\/seminarseries\/\d{4}-\d{4}\/index$",
         url
@@ -294,6 +294,9 @@ def check_for_traps(url, parsed):
 
     # blocks month/year URLs that often repeat
     if re.search(r"/\d{4}-\d{2}(/|$)", parsed.path):
+        return False
+    # seperate cases of events with different date formatting (didn't get covered by other case)
+    if re.search(r"/events/(today|month|\d{4}-\d{2}(-\d{2})?)", parsed.path, re.IGNORECASE):
         return False
     
     # blocks any login pages from being added to frontier
@@ -316,6 +319,13 @@ def check_for_traps(url, parsed):
     if any(part.startswith(('version=', 'do=', 'rev=')) for part in query_parts):
         return False
 
+    # addresses eppstein/pix files, not useful at all for the amount of URLs generated
+    if re.match(r"^https?:\/\/(?:www\.)?ics\.uci\.edu\/~eppstein\/pix(?:\/.*)?$", url):
+        return False
+    
+    # blocks the wiki traps that take you down a spiral of pages that you can't even access
+    if re.search(r"/wiki/.*/timeline", url, re.IGNORECASE) and "from=" in parsed.query:
+        return False
     # Passed all traps
     return True
     
@@ -354,8 +364,8 @@ def is_valid(url):
             + r"|wav|avi|mov|mpeg|ram|m4v|mkv|ogg|ogv|pdf"
             + r"|ps|eps|tex|ppt|pptx|doc|docx|xls|xlsx|names"
             + r"|data|dat|exe|bz2|tar|msi|bin|7z|psd|dmg|iso"
-            + r"|epub|dll|cnf|tgz|sha1|apk|war|txt|pps|ppsx"
-            + r"|thmx|mso|arff|rtf|jar|csv"
+            + r"|epub|dll|cnf|tgz|sha1|apk|war|txt|pps|ppsx|scm"
+            + r"|thmx|mso|arff|rtf|jar|csv|img|c|cpp|h|py|java"
             + r"|rm|smil|wmv|swf|wma|zip|rar|gz)$", parsed.path.lower())
         
         return True
