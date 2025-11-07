@@ -3,7 +3,7 @@ from urllib.parse import urlparse, urljoin, urldefrag
 from lxml import html
 
 # GLOBAL VAR for minimum words for a website to be useful
-MIN_WORDS = 100
+MIN_WORDS = 30
 
 # Allowed UCI domains for crawling - CRITICAL REQUIREMENT
 ALLOWED_DOMAINS = [
@@ -46,7 +46,13 @@ analytics = {
     # dictionary for the words parsed and their count
     "word_frequencies": {},
     # dictionary for the subdomains and their count
-    "subdomain_counts": {}
+    "subdomain_counts": {},
+    # NEW: track word count for each page
+    "page_word_counts": {},  # url -> word_count mapping
+    # NEW: histogram of word count distribution
+    "word_count_histogram": {},  # word_count -> frequency
+    # NEW: track how many pages were skipped for being too short
+    "skipped_pages_count": 0,
 }
 
 
@@ -225,20 +231,30 @@ def process_page_analytics(clean_url, tree):
         words = tokenize_text(text)
         
         word_count = len(words)
+        
+        # NEW: Always track word count distribution (before filtering)
+        analytics["word_count_histogram"][word_count] = analytics["word_count_histogram"].get(word_count, 0) + 1
+        
         # will skip pages with minimal content (groupmate's logic)
-        if word_count < MIN_WORDS: # REVIEW BC IDK IF ITS TOO LOW OR HIGH 
+        if word_count < MIN_WORDS:
+            # NEW: Track skipped pages
+            analytics["skipped_pages_count"] += 1
+            print(f"[SCRAPER] Skipped page with {word_count} words: {clean_url}")
             return False  # Indicates page should be skipped
         
-        # Add URL to unique pages set (this was missing!)
+        # Add URL to unique pages set
         analytics["unique_pages"].add(clean_url)
+        
+        # NEW: Track word count for this specific page
+        analytics["page_word_counts"][clean_url] = word_count
         
         # Update analytics using helper functions
         update_word_frequencies(words)
         update_longest_page(clean_url, word_count)
         update_subdomain_analytics(clean_url)
         
-        # Save analytics periodically (every 100 pages)
-        if len(analytics["unique_pages"]) % 100 == 0:
+        # Save analytics frequently (every 10 pages)
+        if len(analytics["unique_pages"]) % 10 == 0:
             save_analytics_to_file()
         
         return True  # Indicates page was processed successfully
@@ -251,6 +267,12 @@ def scraper(url, resp):
     links = extract_next_links(url, resp)
     # will be a list containing all the valid links after extraction
     valid_links = [link for link in links if is_valid(link)]
+    
+    # Skip processing 4xx and 5xx error responses for analytics
+    if resp.status >= 400:
+        print(f"[SCRAPER] Skipping error page: {url} (status {resp.status})")
+        return valid_links
+    
     # checks if the response is valid and if there is any valid content to parse
     if (resp.status == 200) and (resp.raw_response) and (resp.raw_response.content):
         # this will separate the url from the fragment(fragment not needed)
@@ -353,8 +375,17 @@ def check_for_traps(url, parsed):
     # blocks month/year URLs that often repeat
     if re.search(r"/\d{4}-\d{2}(/|$)", parsed.path):
         return False
-    # seperate cases of events with different date formatting (didn't get covered by other case)
-    if re.search(r"/events/(today|month|\d{4}-\d{2}(-\d{2})?)", parsed.path, re.IGNORECASE):
+        
+    # blocks general */events/* pages (known trap pattern)
+    if "/events/" in parsed.path.lower():
+        return False
+    
+    # blocks known problematic domains/paths
+    if any(trap in url.lower() for trap in [
+        'fano.ics.uci.edu/ca/rules', 
+        'gitlab.ics.uci.edu',
+        'grape.ics'
+    ]):
         return False
     
     # blocks any login pages from being added to frontier
@@ -363,6 +394,10 @@ def check_for_traps(url, parsed):
     
     # page that got infinitely stuck during debug
     if "doku.php" in url.lower():
+        return False
+    
+    # blocks directory listing sorting parameters (C= for sort column, O= for order)
+    if re.search(r'[?&]C=[DSNM][;&]?O=[AD]', parsed.query, re.IGNORECASE):
         return False
     
     # necessary for any pagination loops (page=70, page=71, page=72, ...)
