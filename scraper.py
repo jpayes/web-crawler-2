@@ -5,6 +5,15 @@ from lxml import html
 # GLOBAL VAR for minimum words for a website to be useful
 MIN_WORDS = 30
 
+# GLOBAL VAR for maximum words to filter out extremely large pages
+MAX_WORDS = 20000
+
+# GitLab link counter to allow only the first link
+gitlab_link_count = 0
+
+# Set to track already logged blocked URLs (prevent spam)
+logged_blocked_urls = set()
+
 # Allowed UCI domains for crawling - CRITICAL REQUIREMENT
 ALLOWED_DOMAINS = [
     "ics.uci.edu",
@@ -47,12 +56,14 @@ analytics = {
     "word_frequencies": {},
     # dictionary for the subdomains and their count
     "subdomain_counts": {},
-    # NEW: track word count for each page
+    # track word count for each page
     "page_word_counts": {},  # url -> word_count mapping
-    # NEW: histogram of word count distribution
+    # histogram of word count distribution
     "word_count_histogram": {},  # word_count -> frequency
-    # NEW: track how many pages were skipped for being too short
+    # track how many pages were skipped for being too short
     "skipped_pages_count": 0,
+    # track how many times we encounter each subdomain during validation
+    "subdomain_encounter_counts": {},
 }
 
 
@@ -107,6 +118,9 @@ def finalize_report():
 
             print(
                 f"[Analytics] Results written to report.txt\n"
+                f"[Analytics] Pages processed: {len(analytics['unique_pages'])}\n"
+                f"[Analytics] Pages skipped (too short): {analytics['skipped_pages_count']}\n"
+                f"[Analytics] Subdomains encountered during validation: {len(analytics['subdomain_encounter_counts'])}"
             )
 
         except Exception as e:
@@ -200,10 +214,16 @@ def update_subdomain_analytics(clean_url):
                 break
         
         if is_valid_domain:
+            # Extract subdomain in the format: subdomain.domain (without .edu)
+            # For example: selectpro.proteomics.ics.uci.edu -> selectpro.proteomics.ics.uci
+            subdomain_key = netloc
+            if subdomain_key.endswith('.edu'):
+                subdomain_key = subdomain_key[:-4]  # Remove .edu suffix
+            
             # Count unique pages per subdomain
-            if netloc not in analytics["subdomain_counts"]:
-                analytics["subdomain_counts"][netloc] = 0
-            analytics["subdomain_counts"][netloc] += 1
+            if subdomain_key not in analytics["subdomain_counts"]:
+                analytics["subdomain_counts"][subdomain_key] = 0
+            analytics["subdomain_counts"][subdomain_key] += 1
     except Exception as e:
         # Silently handle any URL parsing errors
         pass
@@ -212,14 +232,15 @@ def save_analytics_to_file():
     """Helper function to save analytics data for report generation"""
     import json
     
-    # Convert set to list for JSON serialization
+    # Convert set to list for JSON serialization and add GitLab counter
     analytics_copy = analytics.copy()
     analytics_copy["unique_pages"] = list(analytics["unique_pages"])
+    analytics_copy["gitlab_link_count"] = gitlab_link_count
     
     with open("analytics_data.json", "w") as f:
         json.dump(analytics_copy, f, indent=2)
     
-    print(f"Analytics saved: {len(analytics['unique_pages'])} unique pages crawled")
+    print(f"Analytics saved: {len(analytics['unique_pages'])} unique pages, {len(analytics['subdomain_encounter_counts'])} subdomains encountered")
 
 def process_page_analytics(clean_url, tree):
     """Helper function to process all analytics for a page"""
@@ -237,9 +258,16 @@ def process_page_analytics(clean_url, tree):
         
         # will skip pages with minimal content (groupmate's logic)
         if word_count < MIN_WORDS:
-            # NEW: Track skipped pages
+            # Track skipped pages
             analytics["skipped_pages_count"] += 1
             print(f"[SCRAPER] Skipped page with {word_count} words: {clean_url}")
+            return False  # Indicates page should be skipped
+        
+        # Skip pages with too much content (likely data dumps)
+        if word_count > MAX_WORDS:
+            # Track skipped pages
+            analytics["skipped_pages_count"] += 1
+            print(f"[SCRAPER] Skipped large page with {word_count} words: {clean_url}")
             return False  # Indicates page should be skipped
         
         # Add URL to unique pages set
@@ -284,8 +312,8 @@ def scraper(url, resp):
                 tree = html.fromstring(resp.raw_response.content)
                 success = process_page_analytics(clean_url, tree)
                 if not success:
-                    print("[SCRAPER] skipped this page")
-                    return valid_links  # Skip if page has minimal content
+                    print("[SCRAPER] Skipped page (insufficient words or low quality)")
+                    return valid_links  # Skip if page has minimal content or low quality
                 analytics["unique_pages"].add(clean_url)
                 
             except Exception as e:
@@ -364,29 +392,52 @@ def check_for_traps(url, parsed):
     ):
         return False
 
-    # blocks these tribe calendar pages
-    if "tribe" in url or "tribe-bar-date" in url:
+    # blocks these tribe calendar pages and calendar-related URLs
+    if any(keyword in url.lower() for keyword in ["tribe", "tribe-bar-date", "calendar", "eventdisplay"]):
         return False
 
     # blocks the URLs that have ical (calendar related)
     if re.search(r"[?&](outlook-)?ical(=\d+|=1)?", parsed.query, re.IGNORECASE):
         return False
 
-    # blocks month/year URLs that often repeat
+    # blocks month/year URLs that often repeat - ENABLED for calendar traps
     if re.search(r"/\d{4}-\d{2}(/|$)", parsed.path):
         return False
         
     # blocks general */events/* pages (known trap pattern)
+    # STRENGTHENED: Block more calendar/event pagination patterns
     if "/events/" in parsed.path.lower():
-        return False
+        # Block specific calendar patterns that cause infinite loops
+        if any(pattern in url.lower() for pattern in [
+            "/events/category/",     # Event categories
+            "/events/list/",         # Event list pages
+            "/events/tag/",          # Event tag pages
+            "/day/",                 # Date-based events
+            "/past/",                # Past events
+            "/upcoming/",            # Upcoming events
+            "eventdisplay=past",     # Past event display
+            "eventdisplay=upcoming", # Upcoming event display
+        ]):
+            return False
+        # Allow events pages with reasonable pagination, but block high pagination
+        if "/page/" in parsed.path:
+            path_pagination = re.search(r'/page/(\d+)(?:/|$)', parsed.path)
+            if path_pagination and int(path_pagination.group(1)) > 5:
+                return False
     
     # blocks known problematic domains/paths
     if any(trap in url.lower() for trap in [
         'fano.ics.uci.edu/ca/rules', 
-        'gitlab.ics.uci.edu',
         'grape.ics'
     ]):
         return False
+    
+    # Special handling for GitLab - allow only the first link
+    if 'gitlab.ics.uci.edu' in url.lower():
+        global gitlab_link_count
+        gitlab_link_count += 1
+        if gitlab_link_count > 1:
+            return False  # Block subsequent GitLab links
     
     # blocks any login pages from being added to frontier
     if re.search(r"login", url, re.IGNORECASE):
@@ -401,11 +452,27 @@ def check_for_traps(url, parsed):
         return False
     
     # necessary for any pagination loops (page=70, page=71, page=72, ...)
+    # Check both query parameters AND path-based pagination
     pagination_patterns = ('page=', 'start=', 'offset=')
     for p in pagination_patterns:
         m = re.search(rf'{p}(\d+)', parsed.query)
-        if m and int(m.group(1)) > 5:
+        if m and int(m.group(1)) > 15:
             return False
+    
+    # Check for path-based pagination like /page/55, /news/page/55
+    path_pagination = re.search(r'/page/(\d+)(?:/|$)', parsed.path)
+    if path_pagination and int(path_pagination.group(1)) > 5:  # Stricter limit for pagination
+        return False
+    
+    # Block specific problematic news pagination patterns
+    if re.search(r'/very-top-footer-menu-items/news(/page/\d+)?$', parsed.path):
+        return False
+    
+    # Block date-based archive pages (YYYY/MM format) - only archives, not file paths
+    # Only block if it's a date archive page (ends with YYYY/MM or YYYY/MM/)
+    # Don't block file paths like /uploads/2020/07/file.pdf
+    if re.search(r'/\d{4}/\d{2}/?$', parsed.path):
+        return False
         
     # works on removing version traps like Wiki
     query_parts = parsed.query.split('&') if parsed.query else []
@@ -431,8 +498,23 @@ def is_valid(url):
     There are already some conditions that return False.
     """
     try:
+        # Basic URL validation - reject URLs with invalid characters
+        if not url or not isinstance(url, str):
+            return False
+            
+        # Check for non-ASCII characters that might indicate encoding issues
+        try:
+            url.encode('ascii')
+        except UnicodeEncodeError:
+            print(f"[INVALID URL] Non-ASCII characters: {url}")
+            return False
+        
         parsed = urlparse(url)
         if parsed.scheme not in set(["http", "https"]):
+            return False
+            
+        # Validate that we have a proper netloc (domain)
+        if not parsed.netloc or '.' not in parsed.netloc:
             return False
         
         # Check if URL is in allowed UCI domains - CRITICAL REQUIREMENT
@@ -448,9 +530,15 @@ def is_valid(url):
         if not is_valid_domain:
             return False
         
+        # Track subdomain encounters
+        analytics["subdomain_encounter_counts"][netloc] = analytics["subdomain_encounter_counts"].get(netloc, 0) + 1
+        
         # checks if the URL is one of the traps (includes print testing)
         if not check_for_traps(url, parsed):
-            print(f"[TRAP BLOCKED] {url}")
+            # Only log each blocked URL once to prevent spam
+            if url not in logged_blocked_urls:
+                print(f"[TRAP BLOCKED] {url}")
+                logged_blocked_urls.add(url)
             return False
         
         # Check for unwanted file extensions
