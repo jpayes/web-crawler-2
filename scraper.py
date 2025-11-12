@@ -62,10 +62,7 @@ analytics = {
     "word_count_histogram": {},  # word_count -> frequency
     # track how many pages were skipped for being too short
     "skipped_pages_count": 0,
-    # track how many times we encounter each subdomain during validation
-    "subdomain_encounter_counts": {},
 }
-
 
 
 def finalize_report():
@@ -120,7 +117,7 @@ def finalize_report():
                 f"[Analytics] Results written to report.txt\n"
                 f"[Analytics] Pages processed: {len(analytics['unique_pages'])}\n"
                 f"[Analytics] Pages skipped (too short): {analytics['skipped_pages_count']}\n"
-                f"[Analytics] Subdomains encountered during validation: {len(analytics['subdomain_encounter_counts'])}"
+                f"[Analytics] Subdomains found: {len(analytics['subdomain_counts'])}"
             )
 
         except Exception as e:
@@ -216,9 +213,12 @@ def update_subdomain_analytics(clean_url):
         if is_valid_domain:
             # Extract subdomain in the format: subdomain.domain (without .edu)
             # For example: selectpro.proteomics.ics.uci.edu -> selectpro.proteomics.ics.uci
+            # Also remove "www." prefix since that's not a true subdomain
             subdomain_key = netloc
             if subdomain_key.endswith('.edu'):
                 subdomain_key = subdomain_key[:-4]  # Remove .edu suffix
+            if subdomain_key.startswith('www.'):
+                subdomain_key = subdomain_key[4:]  # Remove www. prefix
             
             # Count unique pages per subdomain
             if subdomain_key not in analytics["subdomain_counts"]:
@@ -240,7 +240,7 @@ def save_analytics_to_file():
     with open("analytics_data.json", "w") as f:
         json.dump(analytics_copy, f, indent=2)
     
-    print(f"Analytics saved: {len(analytics['unique_pages'])} unique pages, {len(analytics['subdomain_encounter_counts'])} subdomains encountered")
+    print(f"Analytics saved: {len(analytics['unique_pages'])} unique pages, {len(analytics['subdomain_counts'])} subdomains found")
 
 def process_page_analytics(clean_url, tree):
     """Helper function to process all analytics for a page"""
@@ -400,13 +400,16 @@ def check_for_traps(url, parsed):
     if re.search(r"[?&](outlook-)?ical(=\d+|=1)?", parsed.query, re.IGNORECASE):
         return False
 
-    # blocks month/year URLs that often repeat - ENABLED for calendar traps
-    if re.search(r"/\d{4}-\d{2}(/|$)", parsed.path):
+    # blocks month/year/day URLs that often repeat - ENABLED for calendar traps
+    if re.search(r"/\d{4}-\d{2}(-\d{2})?(/|$|\?)", parsed.path):
         return False
         
     # blocks general */events/* pages (known trap pattern)
-    # STRENGTHENED: Block more calendar/event pagination patterns
+    # AGGRESSIVE: Block ALL /events/ pages with date patterns 
     if "/events/" in parsed.path.lower():
+        # Block any events page with date patterns (main trap source)
+        if re.search(r'/events/\d{4}-\d{2}-\d{2}', parsed.path):
+            return False
         # Block specific calendar patterns that cause infinite loops
         if any(pattern in url.lower() for pattern in [
             "/events/category/",     # Event categories
@@ -424,6 +427,20 @@ def check_for_traps(url, parsed):
             path_pagination = re.search(r'/page/(\d+)(?:/|$)', parsed.path)
             if path_pagination and int(path_pagination.group(1)) > 5:
                 return False
+    
+    # Block social media share parameters (duplicate content)
+    if re.search(r'[?&]share=(facebook|twitter|linkedin|email|pinterest)', parsed.query, re.IGNORECASE):
+        return False
+    
+    # Block tag pages (can generate infinite tag combinations)  
+    if "/tag/" in parsed.path.lower():
+        return False
+    
+    # Block pagination beyond reasonable limits (broader pattern)
+    if "/page/" in parsed.path.lower():
+        page_match = re.search(r'/page/(\d+)', parsed.path)
+        if page_match and int(page_match.group(1)) > 3:
+            return False
     
     # blocks known problematic domains/paths
     if any(trap in url.lower() for trap in [
@@ -529,9 +546,6 @@ def is_valid(url):
         
         if not is_valid_domain:
             return False
-        
-        # Track subdomain encounters
-        analytics["subdomain_encounter_counts"][netloc] = analytics["subdomain_encounter_counts"].get(netloc, 0) + 1
         
         # checks if the URL is one of the traps (includes print testing)
         if not check_for_traps(url, parsed):
