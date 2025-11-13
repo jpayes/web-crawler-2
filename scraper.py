@@ -357,7 +357,7 @@ def extract_next_links(url, resp):
 
     if resp.raw_response is None or resp.raw_response.content is None:
         return new_urls
-    
+
     try:
         # Parse HTML content with lxml instead of BeautifulSoup
         tree = html.fromstring(resp.raw_response.content)
@@ -565,7 +565,7 @@ def is_valid(url):
             + r"|epub|dll|cnf|tgz|sha1|apk|war|txt|pps|ppsx|scm"
             + r"|thmx|mso|arff|rtf|jar|csv|img|c|cpp|h|py|java"
             + r"|rm|smil|wmv|swf|wma|zip|rar|gz)$", parsed.path.lower())
-        
+          
         return True
 
     except TypeError:

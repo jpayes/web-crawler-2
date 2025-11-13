@@ -84,7 +84,7 @@ def test_trap_detection():
     for url in trap_urls:
         parsed = urlparse(url)
         is_allowed = check_for_traps(url, parsed)
-        status = "✅ BLOCKED" if not is_allowed else "❌ ALLOWED (BAD!)"
+        status = "BLOCKED" if not is_allowed else "ALLOWED (BAD)"
         print(f"  {status}: {url}")
         if not is_allowed:
             blocked_count += 1
@@ -97,7 +97,7 @@ def test_trap_detection():
     for url in allowed_urls:
         parsed = urlparse(url)
         is_allowed = check_for_traps(url, parsed)
-        status = "✅ ALLOWED" if is_allowed else "❌ BLOCKED (BAD!)"
+        status = "ALLOWED" if is_allowed else "BLOCKED (BAD)"
         print(f"  {status}: {url}")
         if is_allowed:
             allowed_count += 1
@@ -110,10 +110,10 @@ def test_trap_detection():
     print(f"False positive rate: {len(allowed_urls)-allowed_count}/{len(allowed_urls)} legitimate URLs blocked")
     
     if blocked_count == len(trap_urls) and allowed_count == len(allowed_urls):
-        print("🎉 PERFECT! All traps blocked, all legitimate URLs allowed!")
+        print("All traps blocked, all legitimate URLs allowed")
         return True
     else:
-        print("⚠️  Need to improve trap detection patterns")
+        print("Need to improve trap detection patterns")
         return False
 
 if __name__ == "__main__":
